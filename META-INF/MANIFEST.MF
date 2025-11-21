@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: Update Account Tax
+Bundle-SymbolicName: com.kpiactive.updateaccounttax
+Bundle-Version: 10.0.0.qualifier
+Bundle-Vendor: KPIACTIVE
+Fragment-Host: org.adempiere.base
+Automatic-Module-Name: com.kpiactive.updateaccounttax
+Bundle-RequiredExecutionEnvironment: JavaSE-11
