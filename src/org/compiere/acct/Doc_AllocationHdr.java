@@ -40,7 +40,6 @@ import org.compiere.model.MInvoiceLine;
 import org.compiere.model.MInvoiceTax;
 import org.compiere.model.MOrder;
 import org.compiere.model.MPayment;
-import org.compiere.model.MPeriod;
 import org.compiere.model.MTax;
 import org.compiere.model.Query;
 import org.compiere.model.X_C_Tax_Acct;
@@ -85,7 +84,6 @@ public class Doc_AllocationHdr extends Doc
 	
 	private ArrayList<FactLine>		invGainLossFactLines = null;
 	private ArrayList<FactLine>		payGainLossFactLines = null;
-	private BigDecimal amtDifference = Env.ZERO;
 
 	/**
 	 *  Load Specific Document Details
@@ -448,7 +446,6 @@ public class Doc_AllocationHdr extends Doc
 						fl.setAD_Org_ID(cashLine.getAD_Org_ID());
 				}
 			}
-			
 
 			//	VAT Tax Correction
 			if (invoice != null && as.isTaxCorrection())
@@ -490,15 +487,39 @@ public class Doc_AllocationHdr extends Doc
 				if (p_Error != null)
 					return null;				
 			}	
-			
-			Boolean isMXTaxCorrection = isMXTaxCorrection(as);
-			System.out.println("isMXTaxCorrection"+ isMXTaxCorrection);
-			
+			Boolean isMXTaxCorrection = as.getTaxCorrectionType().equals("M");
+
+
 			if (payment != null && invoice != null && isMXTaxCorrection) {
-				
+				BigDecimal amtDifference = Env.ZERO;
+		        for (FactLine factLine : payGainLossFactLines) {
+
+		              BigDecimal amtSourceDr = factLine.getAmtSourceDr();
+		              BigDecimal amtSourceCr = factLine.getAmtSourceCr();
+		              if (amtSourceDr.signum() != 0) {
+		            	  amtDifference = amtDifference.add(amtSourceDr);
+		              }
+		              if (amtSourceCr.signum() != 0) {
+		            	  amtDifference = amtDifference.add(amtSourceCr);
+		              }
+		        }
+		        
+		        for (FactLine factLine : invGainLossFactLines) {
+
+		              BigDecimal amtSourceDr = factLine.getAmtSourceDr();
+		              BigDecimal amtSourceCr = factLine.getAmtSourceCr();
+		              if (amtSourceDr.signum() != 0) {
+		            	  amtDifference = amtDifference.add(amtSourceDr);
+		              }
+		              if (amtSourceCr.signum() != 0) {
+		            	  amtDifference = amtDifference.add(amtSourceCr);
+		              }
+		        }
+		        
 				MInvoiceTax[] invoiceTaxes = invoice.getTaxes(true);
 				for (MInvoiceTax invoiceTax : invoiceTaxes) {
 					MTax tax = (MTax) invoiceTax.getC_Tax();
+					
 					X_C_Tax_Acct taxtAcct = new Query(Env.getCtx(), X_C_Tax_Acct.Table_Name, " C_Tax_ID=? AND C_AcctSchema_ID=?", invoice.get_TrxName())
 							.setParameters(tax.getC_Tax_ID(), as.get_ID()).setOnlyActiveRecords(true).first();
 					Integer T_TaxPaidSO_Acct = taxtAcct.get_ValueAsInt("T_TaxPaidSO_Acct");
@@ -520,8 +541,21 @@ public class Doc_AllocationHdr extends Doc
 					BigDecimal OpenAmt = invoice.getOpenAmt();
 					BigDecimal TotalInvoiced = invoice.getGrandTotal();
 					BigDecimal PaidInvoice = TotalInvoiced.subtract(OpenAmt);
-					BigDecimal PaidTaxAmt = calcAmount(PaidInvoice, TotalInvoiced,amount ,10);
-					int AcctType = getAcctType(invoice.getC_DocTypeTarget().getDocBaseType(), isSalesTax);
+					BigDecimal PaidTaxAmt = Env.ZERO;
+					if (PaidInvoice.signum() == 0|| TotalInvoiced.signum() == 0|| amount.signum() == 0) {
+						PaidTaxAmt =  Env.ZERO;
+					}else {
+						BigDecimal multiplier = PaidInvoice.divide(TotalInvoiced, 10, RoundingMode.HALF_UP);
+						PaidTaxAmt = multiplier.multiply(amount);
+					}
+	
+					String DocBaseType = invoice.getC_DocTypeTarget().getDocBaseType();
+					int AcctType = 0 ;
+					if (DocBaseType.equals(Doc.DOCTYPE_ARInvoice)|| DocBaseType.equals(Doc.DOCTYPE_ARProForma)|| DocBaseType.equals(Doc.DOCTYPE_ARCredit)) {
+						AcctType = DocTax.ACCTTYPE_TaxDue;
+					}else if (DocBaseType.equals(Doc.DOCTYPE_APInvoice)|| DocBaseType.equals(Doc.DOCTYPE_APCredit)) {
+						AcctType = isSalesTax? DocTax.ACCTTYPE_TaxExpense:DocTax.ACCTTYPE_TaxCredit;
+					}
 					MAccount accountNotPaid = taxLine.getAccount(AcctType, as);
 					
 					List<MInvoiceTax> invoiceTaxRet = new Query(Env.getCtx(), MInvoiceTax.Table_Name, "C_Invoice_ID = ? and C_Tax.IsTaxWithHolding = 'Y' ", invoice.get_TrxName())
@@ -606,26 +640,6 @@ public class Doc_AllocationHdr extends Doc
 		return m_facts;
 	}   //  createFact
 
-	private Boolean isMXTaxCorrection(MAcctSchema as) {
-		
-		 return as.getTaxCorrectionType().equals("M");
-	}
-
-	private BigDecimal calcAmount (BigDecimal InvoicePaid, BigDecimal total, BigDecimal amt, int precision)
-	{
-		if (log.isLoggable(Level.FINE)) log.fine("Amt=" + amt + " - Total=" + total + ", InvoicePaid=" + InvoicePaid);
-		if (InvoicePaid.signum() == 0
-			|| total.signum() == 0
-			|| amt.signum() == 0)
-			return Env.ZERO;
-		//
-		BigDecimal multiplier = InvoicePaid.divide(total, 10, RoundingMode.HALF_UP);
-		BigDecimal retValue = multiplier.multiply(amt);
-		if (retValue.scale() > precision)
-			retValue = retValue.setScale(precision, RoundingMode.HALF_UP);
-		if (log.isLoggable(Level.FINE)) log.fine(retValue + " (Mult=" + multiplier + "(Prec=" + precision + ")");
-		return retValue;
-	}
 	/** Verify if the posting involves two or more organizations
 	@return true if there are more than one org involved on the posting
 	 */
@@ -865,108 +879,6 @@ public class Doc_AllocationHdr extends Doc
 	 *	@param WriteOffAccoint write off acct
 	 *	@return true if created
 	 */
-	
-	private void createTaxCorrectionKPI(MInvoice invoice) {
-		MInvoiceTax[] invoiceTaxes = invoice.getTaxes(true);
-		for (MInvoiceTax invoiceTax : invoiceTaxes) {
-			MTax tax = (MTax) invoiceTax.getC_Tax();
-			
-			int C_Tax_ID = tax.getC_Tax_ID();
-			String name = tax.getName();
-			BigDecimal rate = tax.getRate();
-			BigDecimal taxBaseAmt = invoiceTax.getTaxBaseAmt();
-			BigDecimal amount = invoiceTax.getTaxAmt();
-			Boolean isSalesTax = tax.isSalesTax();
-			DocTax taxLine = new DocTax(C_Tax_ID, name, rate,
-					taxBaseAmt, amount, isSalesTax);
-			
-			MAcctSchema[] ass = MAcctSchema.getClientAcctSchema(Env.getCtx(), invoice.getAD_Client_ID());
-			
-			
-			for (MAcctSchema as : ass) {
-				X_C_Tax_Acct taxtAcct = new Query(Env.getCtx(), X_C_Tax_Acct.Table_Name, " C_Tax_ID=? AND C_AcctSchema_ID=?", invoice.get_TrxName())
-						.setParameters(tax.getC_Tax_ID(), as.get_ID()).setOnlyActiveRecords(true).first();
-				Integer TaxSOAccount_ID = taxtAcct.get_ValueAsInt("TaxSOAccount_ID");
-				Integer TaxPOAccount_ID = taxtAcct.get_ValueAsInt("TaxPOAccount_ID");
-				Integer FactAcctPaidTax_ID = invoice.isSOTrx()?TaxSOAccount_ID:TaxPOAccount_ID;
-				
-				if (TaxSOAccount_ID== 0 && invoice.isSOTrx())
-					continue;
-				
-				if (TaxPOAccount_ID== 0 && !invoice.isSOTrx())
-					continue;
-				
-				int AcctType = getAcctType(invoice.getC_DocTypeTarget().getDocBaseType(), isSalesTax);
-				MAccount account = taxLine.getAccount(AcctType, as);
-					
-				String sql = "select distinct ca.c_payment_id from c_allocationline ca "
-						+ "join C_AllocationHdr ah on ah.C_AllocationHdr_ID = ca.C_AllocationHdr_ID"
-						+ " where ca.C_invoice_ID ="+invoice.get_ID() + " and ah.docstatus != 'RE' ";
-				
-				
-				List<MAllocationLine> allocationLines = new Query(Env.getCtx(), MAllocationLine.Table_Name, "C_AllocationLine.C_Invoice_ID= ? and C_AllocationHdr.DocStatus IN ('CO','IP') ", invoice.get_TrxName())
-						.addJoinClause(" JOIN C_AllocationHdr on C_AllocationHdr.C_AllocationHdr_ID = C_AllocationLine.C_AllocationHdr_ID")
-						.setParameters(invoice.get_ID()).list();
-				for (MAllocationLine allocationLine : allocationLines) {
-					
-					int C_Period_ID = MPeriod.getC_Period_ID(Env.getCtx(), allocationLine.getC_AllocationHdr().getDateAcct(), invoice.getAD_Org_ID());
-					MPayment payment = (MPayment) allocationLine.getC_Payment();
-					
-					MFactAcct factAcctPaidTax = new MFactAcct(Env.getCtx(), 0, allocationLine.get_TrxName());
-
-					factAcctPaidTax.setAccount_ID(FactAcctPaidTax_ID);
-					factAcctPaidTax.setAD_Org_ID(payment.getAD_Org_ID());
-					factAcctPaidTax.setAD_OrgTrx_ID(payment.getAD_OrgTrx_ID());
-					factAcctPaidTax.setDateAcct(allocationLine.getC_AllocationHdr().getDateAcct());
-					factAcctPaidTax.setDateTrx(allocationLine.getC_AllocationHdr().getDateTrx());
-					factAcctPaidTax.setRecord_ID(allocationLine.getC_Payment_ID());
-					factAcctPaidTax.setAD_Table_ID(MPayment.Table_ID);
-					factAcctPaidTax.setC_Period_ID(C_Period_ID);
-					factAcctPaidTax.setC_AcctSchema_ID(as.get_ID());
-					factAcctPaidTax.setPostingType("A");
-					factAcctPaidTax.setC_Currency_ID(invoice.getC_Currency_ID());
-					factAcctPaidTax.setC_BPartner_ID(invoice.getC_BPartner_ID());
-					
-					MFactAcct factAcctNOTPaidTax = new MFactAcct(Env.getCtx(), 0, allocationLine.get_TrxName());
-					factAcctNOTPaidTax.setAccount_ID(account.getAccount_ID());
-					factAcctPaidTax.setAD_Org_ID(payment.getAD_Org_ID());
-					factAcctPaidTax.setAD_OrgTrx_ID(payment.getAD_OrgTrx_ID());
-					factAcctNOTPaidTax.setDateAcct(allocationLine.getC_AllocationHdr().getDateAcct());
-					factAcctNOTPaidTax.setDateTrx(allocationLine.getC_AllocationHdr().getDateTrx());
-					factAcctNOTPaidTax.setRecord_ID(allocationLine.getC_Payment_ID());
-					factAcctNOTPaidTax.setAD_Table_ID(MPayment.Table_ID);
-					factAcctNOTPaidTax.setC_Period_ID(C_Period_ID);
-					factAcctNOTPaidTax.setC_AcctSchema_ID(as.get_ID());
-					factAcctNOTPaidTax.setPostingType("A");
-					factAcctNOTPaidTax.setC_Currency_ID(invoice.getC_Currency_ID());
-					factAcctNOTPaidTax.setC_BPartner_ID(invoice.getC_BPartner_ID());
-					BigDecimal amtRet = Env.ZERO;
-					List<MInvoiceTax> invoiceTaxRet = new Query(Env.getCtx(), MInvoiceTax.Table_Name, "C_Invoice_ID = ? and C_Tax.IsTaxWithHolding = 'Y' ", invoice.get_TrxName())
-							.addJoinClause(" JOIN C_Tax on C_Tax.C_Tax_ID = C_InvoiceTax.C_Tax_ID ").setParameters(invoice.get_ID()).list();
-					for (MInvoiceTax mInvoiceTaxRet : invoiceTaxRet) {
-						amtRet = amtRet.add(mInvoiceTaxRet.getTaxAmt().abs());
-					}
-					
-							
-				}
-//				factAcct.deleteEx(true);
-			}	
-		
-	}
-		
-	}
-	
-	private  Integer getAcctType(String DocBaseType, Boolean isSalesTax) {
-		Integer AccType = null;
-		if (DocBaseType.equals(Doc.DOCTYPE_ARInvoice)|| DocBaseType.equals(Doc.DOCTYPE_ARProForma)|| DocBaseType.equals(Doc.DOCTYPE_ARCredit)) {
-			AccType = DocTax.ACCTTYPE_TaxDue;
-		}else if (DocBaseType.equals(Doc.DOCTYPE_APInvoice)|| DocBaseType.equals(Doc.DOCTYPE_APCredit)) {
-			AccType = isSalesTax? DocTax.ACCTTYPE_TaxExpense:DocTax.ACCTTYPE_TaxCredit;
-		}
-		
-		return AccType;
-		
-	}
 	private boolean createTaxCorrection (MAcctSchema as, Fact fact,
 		DocLine_Allocation line,
 		MAccount DiscountAccount, MAccount WriteOffAccoint, boolean isSOTrx)
@@ -1116,7 +1028,6 @@ public class Doc_AllocationHdr extends Doc
 			log.fine("No Difference");
 			return null;
 		}
-		amtDifference = amtDifference.add(acctDifference);
 
 		MAccount gain = MAccount.get (as.getCtx(), as.getAcctSchemaDefault().getRealizedGain_Acct());
 		MAccount loss = MAccount.get (as.getCtx(), as.getAcctSchemaDefault().getRealizedLoss_Acct());
@@ -1246,7 +1157,6 @@ public class Doc_AllocationHdr extends Doc
 			log.fine("No Difference");
 			return null;
 		}
-		amtDifference = amtDifference.add(acctDifference);
 
 		MAccount gain = MAccount.get (as.getCtx(), as.getAcctSchemaDefault().getRealizedGain_Acct());
 		MAccount loss = MAccount.get (as.getCtx(), as.getAcctSchemaDefault().getRealizedLoss_Acct());
